@@ -1,5 +1,5 @@
 /**
- * Vibe Logger v2.0 - Frontend Injection Layer
+ * Vibe Logger v1.1 - Frontend Injection Layer (Smart Context)
  * Pure Vanilla JS - NO CommonJS exports (injected directly into browser)
  * 
  * This file is read via fs.readFileSync and injected into the browser.
@@ -9,7 +9,7 @@
 (function () {
     'use strict';
 
-    console.log('--- VIBE LOGGER UI SCRIPT LOADED ---');
+    console.log('--- VIBE LOGGER v1.1 UI SCRIPT LOADED ---');
 
     // iFrame protection - only run in top window
     if (window.self !== window.top) {
@@ -23,6 +23,102 @@
         return;
     }
     window.__vibeLoggerInitialized = true;
+
+    // ========================================
+    // HTML SANITIZATION (Clean Snapshots)
+    // ========================================
+
+    /**
+     * Get sanitized HTML without scripts, styles, and noise
+     * @returns {string} Clean semantic HTML
+     */
+    function getCleanHTML() {
+        // Clone the document to avoid modifying the actual page
+        var clone = document.documentElement.cloneNode(true);
+
+        // Tags to remove completely
+        var tagsToRemove = ['script', 'style', 'link', 'noscript', 'iframe', 'object', 'embed'];
+
+        tagsToRemove.forEach(function (tag) {
+            var elements = clone.querySelectorAll(tag);
+            for (var i = 0; i < elements.length; i++) {
+                elements[i].parentNode.removeChild(elements[i]);
+            }
+        });
+
+        // Replace SVGs with placeholder (they can be huge)
+        var svgs = clone.querySelectorAll('svg');
+        for (var i = 0; i < svgs.length; i++) {
+            var placeholder = document.createElement('span');
+            placeholder.textContent = '[SVG]';
+            placeholder.setAttribute('data-original', 'svg');
+            svgs[i].parentNode.replaceChild(placeholder, svgs[i]);
+        }
+
+        // Remove our own UI elements
+        var vibeElements = clone.querySelectorAll('#vibe-logger-panel, #vibe-toast-container, #vibe-logger-styles');
+        for (var i = 0; i < vibeElements.length; i++) {
+            vibeElements[i].parentNode.removeChild(vibeElements[i]);
+        }
+
+        // Remove HTML comments
+        function removeComments(node) {
+            var children = node.childNodes;
+            for (var i = children.length - 1; i >= 0; i--) {
+                var child = children[i];
+                if (child.nodeType === 8) { // Comment node
+                    node.removeChild(child);
+                } else if (child.nodeType === 1) { // Element node
+                    removeComments(child);
+                }
+            }
+        }
+        removeComments(clone);
+
+        // Remove inline event handlers and data attributes that are noisy
+        var allElements = clone.querySelectorAll('*');
+        for (var i = 0; i < allElements.length; i++) {
+            var el = allElements[i];
+            var attrs = el.attributes;
+            var toRemove = [];
+
+            for (var j = 0; j < attrs.length; j++) {
+                var attrName = attrs[j].name.toLowerCase();
+                // Remove event handlers and tracking attributes
+                if (attrName.startsWith('on') ||
+                    attrName.startsWith('data-gtm') ||
+                    attrName.startsWith('data-analytics') ||
+                    attrName.startsWith('data-track')) {
+                    toRemove.push(attrName);
+                }
+            }
+
+            toRemove.forEach(function (attr) {
+                el.removeAttribute(attr);
+            });
+        }
+
+        // Return clean HTML
+        return clone.outerHTML;
+    }
+
+    /**
+     * Capture and save a clean snapshot
+     * @param {string} trigger - What triggered the snapshot
+     */
+    window.captureCleanSnapshot = function (trigger) {
+        if (!window.nodeSaveSnapshot) {
+            console.log('Vibe Logger: nodeSaveSnapshot not available');
+            return;
+        }
+
+        try {
+            var cleanHtml = getCleanHTML();
+            window.nodeSaveSnapshot(cleanHtml, trigger);
+        } catch (err) {
+            console.log('Vibe Logger: Snapshot capture failed - ' + err.message);
+        }
+    };
 
     // ========================================
     // TOAST NOTIFICATION SYSTEM
@@ -163,6 +259,12 @@
                 'box-shadow: 0 10px 30px rgba(0,0,0,0.5); backdrop-filter: blur(5px);' +
                 'min-width: 200px; min-height: 80px; cursor: move;';
 
+            // Version label
+            var versionLabel = document.createElement('div');
+            versionLabel.innerText = 'v1.1';
+            versionLabel.style.cssText =
+                'position: absolute; top: 5px; right: 8px; font-size: 8px; color: #666;';
+
             // REC Button
             var btnRec = document.createElement('button');
             btnRec.innerText = '● REC';
@@ -270,6 +372,7 @@
             wrapper.style.cssText = 'display: flex; gap: 10px;';
             wrapper.appendChild(btnRec);
             wrapper.appendChild(btnStop);
+            div.appendChild(versionLabel);
             div.appendChild(wrapper);
             div.appendChild(timerLabel);
             div.appendChild(statusLabel);
