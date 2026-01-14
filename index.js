@@ -1,83 +1,136 @@
-const puppeteer = require('puppeteer');
-const fs = require('fs');
-const path = require('path');
+/**
+ * Vibe Logger v2.0 - Orchestrator
+ * Configures Puppeteer and coordinates modules
+ */
 
-// Configurações
+const puppeteer = require('puppeteer');
+const path = require('path');
+const fs = require('fs');
+
+// Import data layer (Node module - CommonJS OK here)
+const logger = require('./logger');
+
+// Read client UI script (pure vanilla JS file)
+const CLIENT_UI_SCRIPT = fs.readFileSync(path.join(__dirname, 'client_ui.js'), 'utf8');
+
+// Configuration
 const EXCLUDE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.css', '.woff', '.woff2', '.ico', '.svg', '.mp4', '.mp3'];
 const OUTPUT_DIR = path.join(__dirname, 'captures');
 
-// Cria pasta de capturas se não existir
+// Ensure output directory exists
 if (!fs.existsSync(OUTPUT_DIR)) {
-    fs.mkdirSync(OUTPUT_DIR);
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 }
 
-(async () => {
-    console.log('🚀 Iniciando Vibe Logger (Clean Mode)...');
+// Global recording state (The Handshake)
+let globalIsRecording = false;
 
-    const browser = await puppeteer.launch({
-        headless: false,
-        defaultViewport: null,
-        args: [
-            '--start-maximized',
-            '--no-sandbox',           // Correção aplicada
-            '--disable-setuid-sandbox' // Correção aplicada
-        ]
-    });
+(async () => {
+    console.log('🚀 Iniciando Vibe Logger v2.0...');
+
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            headless: false,
+            defaultViewport: null,
+            args: [
+                '--start-maximized',
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ]
+        });
+    } catch (err) {
+        console.error('❌ Failed to launch browser:', err.message);
+        process.exit(1);
+    }
 
     const pages = await browser.pages();
     const page = pages[0];
 
-    // --- VARIÁVEIS DE ESTADO ---
-    let isRecording = false;
-    let payloadLogs = [];
-    let consoleLogs = [];
+    // ========================================
+    // DEBUG: BROWSER CONSOLE/ERROR LOGGING
+    // ========================================
+    page.on('console', msg => {
+        const text = msg.text();
+        if (text.includes('Vibe Logger') || text.includes('---')) {
+            console.log('🔵 BROWSER:', text);
+        }
+    });
 
-    // --- FUNÇÕES DE CONTROLE ---
+    page.on('pageerror', err => {
+        console.log('🔴 BROWSER ERROR:', err.toString());
+    });
+
+    // Handle browser disconnection
+    browser.on('disconnected', () => {
+        console.log('🔌 Browser disconnected');
+        if (globalIsRecording) {
+            console.log('⚠️ Recording was active, attempting to save...');
+            try {
+                logger.endSession();
+            } catch (e) {
+                console.error('Failed to save on disconnect:', e.message);
+            }
+        }
+        process.exit(0);
+    });
+
+    // ========================================
+    // EXPOSE NODE FUNCTIONS TO BROWSER
+    // ========================================
+
+    // Start Recording
     await page.exposeFunction('nodeStartRecording', () => {
-        isRecording = true;
-        payloadLogs = [];
-        consoleLogs = [];
+        globalIsRecording = true;
+        logger.initSession(OUTPUT_DIR);
         console.log('🔴 GRAVAÇÃO INICIADA');
         return true;
     });
 
+    // Stop Recording
     await page.exposeFunction('nodeStopRecording', async () => {
-        isRecording = false;
-        console.log('⏹ GRAVAÇÃO PARADA. Salvando arquivos...');
-
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const sessionFolder = path.join(OUTPUT_DIR, `session_${timestamp}`);
-
-        fs.mkdirSync(sessionFolder);
-
-        // Salva PAYLOAD.JSON (Versão Limpa)
-        fs.writeFileSync(
-            path.join(sessionFolder, 'payload.json'),
-            JSON.stringify(payloadLogs, null, 2)
-        );
-
-        // Salva CONSOLE.JSON
-        fs.writeFileSync(
-            path.join(sessionFolder, 'console.json'),
-            JSON.stringify(consoleLogs, null, 2)
-        );
-
-        console.log(`✅ Arquivos salvos em: ${sessionFolder}`);
-        return sessionFolder;
+        globalIsRecording = false;
+        const folder = logger.endSession();
+        console.log(`⏹ GRAVAÇÃO PARADA. Arquivos salvos em: ${folder}`);
+        return folder;
     });
 
-    // --- CAPTURA DE CONSOLE ---
-    page.on('console', async (msg) => {
-        if (!isRecording) return;
-        consoleLogs.push({
-            type: msg.type(),
-            text: msg.text(),
-            location: msg.location(), // Útil para saber qual linha do código deu erro
-            timestamp: new Date().toISOString()
+    // Get Recording State (The Handshake)
+    await page.exposeFunction('nodeGetRecordingState', () => {
+        return globalIsRecording;
+    });
+
+    // Log Click Events
+    await page.exposeFunction('nodeLogClick', (clickData) => {
+        if (!globalIsRecording) return;
+        logger.logEvent('USER_INTERACTION', {
+            action: 'click',
+            x: clickData.x,
+            y: clickData.y,
+            selector: clickData.selector,
+            tagName: clickData.tagName
         });
     });
 
-    // --- CAPTURA DE REDE (PAYLOADS OTIMIZADOS) ---
+    // ========================================
+    // CONSOLE CAPTURE
+    // ========================================
+    page.on('console', async (msg) => {
+        if (!globalIsRecording) return;
+        // Skip our own debug messages
+        const text = msg.text();
+        if (text.includes('Vibe Logger') || text.includes('---')) return;
+
+        logger.logEvent('CONSOLE', {
+            type: msg.type(),
+            text: text,
+            location: msg.location()
+        });
+    });
+
+    // ========================================
+    // NETWORK INTERCEPTION
+    // ========================================
     await page.setRequestInterception(true);
 
     page.on('request', (request) => {
@@ -85,213 +138,121 @@ if (!fs.existsSync(OUTPUT_DIR)) {
     });
 
     page.on('response', async (response) => {
-        if (!isRecording) return;
-
         const req = response.request();
         const url = response.url();
         const method = req.method();
+        const status = response.status();
         const resourceType = req.resourceType();
 
-        // 1. Filtro de Extensões/Tipos (Para não poluir com imagens/fontes)
+        // Filter out static assets
         const extension = path.extname(url).toLowerCase();
-        if (EXCLUDE_EXTENSIONS.includes(extension) || resourceType === 'image' || resourceType === 'font' || resourceType === 'media') {
+        if (EXCLUDE_EXTENSIONS.includes(extension) ||
+            resourceType === 'image' ||
+            resourceType === 'font' ||
+            resourceType === 'media') {
             return;
         }
 
-        // --- TRATAMENTO DO BODY DA RESPONSE ---
+        // Show toast for XHR/Fetch requests (always, for visual feedback)
+        if (resourceType === 'xhr' || resourceType === 'fetch') {
+            try {
+                await page.evaluate((m, u, s) => {
+                    if (window.showNetworkToast) window.showNetworkToast(m, u, s);
+                }, method, url, status);
+            } catch (e) {
+                // Page might be navigating, ignore
+            }
+        }
+
+        // Only log if recording
+        if (!globalIsRecording) return;
+
+        // Get response body
         let responseBody = null;
         try {
-            // Primeiro tenta JSON
             responseBody = await response.json();
         } catch (e) {
             try {
-                // Se falhar, tenta texto
                 const text = await response.text();
-                // Só salva se não for vazio e não parecer lixo binário (opcional, mas bom pra vibe code)
                 if (text && text.length > 0) {
                     responseBody = text;
                 }
             } catch (e2) {
-                // Se não der pra ler (ex: cors, redirect 302 sem body), deixa null
                 responseBody = null;
             }
         }
 
-        // --- TRATAMENTO DO BODY DA REQUEST ---
+        // Get request body
         let requestBody = null;
         const postData = req.postData();
         if (postData) {
             try {
                 requestBody = JSON.parse(postData);
             } catch (e) {
-                requestBody = postData; // Se não for JSON, salva a string crua
+                requestBody = postData;
             }
         }
 
-        // --- MONTAGEM DO LOG LIMPO ---
-        // Cria apenas os campos essenciais
+        // Build log entry
         const logEntry = {
             url: url,
             method: method,
-            status: response.status(),
-            type: resourceType,
-            timestamp: new Date().toISOString()
+            status: status,
+            resourceType: resourceType
         };
 
-        // Regra: Só adiciona 'request' se tiver body (payload enviado)
         if (requestBody) {
             logEntry.request = { body: requestBody };
         }
 
-        // Regra: Só adiciona 'response' se tiver body (conteúdo recebido)
-        // Ignora bodies vazios ou nulos
         if (responseBody !== null && responseBody !== undefined && responseBody !== '') {
             logEntry.response = { body: responseBody };
         }
 
-        payloadLogs.push(logEntry);
-        console.log(`⚡ [${method}] ${url}`);
+        logger.logEvent('NETWORK_REQUEST', logEntry);
+
+        // Capture snapshot on network error
+        if (status >= 400 && globalIsRecording) {
+            try {
+                const html = await page.evaluate(() => document.documentElement.outerHTML);
+                logger.saveSnapshot(html, `network_error_${status}`);
+            } catch (e) {
+                // Page might be navigating
+            }
+        }
+
+        console.log(`⚡ [${method}] ${status} ${url.substring(0, 80)}${url.length > 80 ? '...' : ''}`);
     });
 
-    // --- INJEÇÃO DE INTERFACE ---
-    await page.evaluateOnNewDocument(() => {
-        window.addEventListener('DOMContentLoaded', () => {
-            const div = document.createElement('div');
-            div.style.cssText = `
-                position: fixed; bottom: 20px; right: 20px; z-index: 2147483647;
-                background: rgba(0,0,0,0.85); padding: 15px; border-radius: 12px;
-                display: flex; flex-direction: column; gap: 10px; font-family: monospace; border: 1px solid #444;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.5); backdrop-filter: blur(5px);
-                min-width: 200px; min-height: 80px; cursor: move;
-            `;
-
-            const btnRec = document.createElement('button');
-            btnRec.innerText = '● REC';
-            btnRec.style.cssText = `background: #ff4d4d; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold;`;
-
-            const btnStop = document.createElement('button');
-            btnStop.innerText = '■ SAVE';
-            btnStop.style.cssText = `background: #4dff88; color: #000; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; display: none;`;
-
-            const statusLabel = document.createElement('div');
-            statusLabel.innerText = 'Ready';
-            statusLabel.style.cssText = 'color: #aaa; font-size: 10px; margin-top:5px; text-align:center;';
-
-            // Resize handle
-            const resizeHandle = document.createElement('div');
-            resizeHandle.style.cssText = `
-                position: absolute; bottom: 0; right: 0; width: 15px; height: 15px;
-                cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, #666 50%);
-                border-bottom-right-radius: 12px;
-            `;
-
-            btnRec.onclick = async () => {
-                await window.nodeStartRecording();
-                btnRec.style.display = 'none';
-                btnStop.style.display = 'block';
-                div.style.border = '2px solid red';
-                statusLabel.innerText = 'Recording...';
-                statusLabel.style.color = 'red';
-            };
-
-            btnStop.onclick = async () => {
-                const folder = await window.nodeStopRecording();
-                btnStop.style.display = 'none';
-                btnRec.style.display = 'block';
-                div.style.border = '1px solid #444';
-                statusLabel.innerText = 'Saved!';
-                statusLabel.style.color = '#4dff88';
-                setTimeout(() => statusLabel.innerText = 'Ready', 2000);
-            };
-
-            const wrapper = document.createElement('div');
-            wrapper.style.cssText = 'display: flex; gap: 10px;';
-            wrapper.appendChild(btnRec);
-            wrapper.appendChild(btnStop);
-            div.appendChild(wrapper);
-            div.appendChild(statusLabel);
-            div.appendChild(resizeHandle);
-            document.body.appendChild(div);
-
-            // --- DRAG & DROP LOGIC ---
-            let isDragging = false;
-            let dragOffsetX = 0;
-            let dragOffsetY = 0;
-
-            div.addEventListener('mousedown', (e) => {
-                // Don't drag if clicking on buttons or resize handle
-                if (e.target === btnRec || e.target === btnStop || e.target === resizeHandle) {
-                    return;
-                }
-
-                isDragging = true;
-                dragOffsetX = e.clientX - div.offsetLeft;
-                dragOffsetY = e.clientY - div.offsetTop;
-                div.style.cursor = 'grabbing';
-                e.preventDefault();
-            });
-
-            document.addEventListener('mousemove', (e) => {
-                if (!isDragging) return;
-
-                const newLeft = e.clientX - dragOffsetX;
-                const newTop = e.clientY - dragOffsetY;
-
-                // Keep within viewport bounds
-                const maxLeft = window.innerWidth - div.offsetWidth;
-                const maxTop = window.innerHeight - div.offsetHeight;
-
-                div.style.left = Math.max(0, Math.min(newLeft, maxLeft)) + 'px';
-                div.style.top = Math.max(0, Math.min(newTop, maxTop)) + 'px';
-                div.style.bottom = 'auto';
-                div.style.right = 'auto';
-            });
-
-            document.addEventListener('mouseup', () => {
-                if (isDragging) {
-                    isDragging = false;
-                    div.style.cursor = 'move';
-                }
-            });
-
-            // --- RESIZE LOGIC ---
-            let isResizing = false;
-            let resizeStartX = 0;
-            let resizeStartY = 0;
-            let resizeStartWidth = 0;
-            let resizeStartHeight = 0;
-
-            resizeHandle.addEventListener('mousedown', (e) => {
-                isResizing = true;
-                resizeStartX = e.clientX;
-                resizeStartY = e.clientY;
-                resizeStartWidth = div.offsetWidth;
-                resizeStartHeight = div.offsetHeight;
-                e.stopPropagation();
-                e.preventDefault();
-            });
-
-            document.addEventListener('mousemove', (e) => {
-                if (!isResizing) return;
-
-                const deltaX = e.clientX - resizeStartX;
-                const deltaY = e.clientY - resizeStartY;
-
-                const newWidth = Math.max(200, resizeStartWidth + deltaX);
-                const newHeight = Math.max(80, resizeStartHeight + deltaY);
-
-                div.style.width = newWidth + 'px';
-                div.style.height = newHeight + 'px';
-            });
-
-            document.addEventListener('mouseup', () => {
-                if (isResizing) {
-                    isResizing = false;
-                }
-            });
-        });
+    // ========================================
+    // NAVIGATION SNAPSHOT
+    // ========================================
+    page.on('load', async () => {
+        if (!globalIsRecording) return;
+        try {
+            // Wait a bit for dynamic content
+            await new Promise(r => setTimeout(r, 500));
+            const html = await page.evaluate(() => document.documentElement.outerHTML);
+            logger.saveSnapshot(html, 'navigation_complete');
+        } catch (e) {
+            console.error('Snapshot failed:', e.message);
+        }
     });
 
-    console.log('🌐 Navegador aberto. Use os botões no canto inferior direito para gravar.');
-    await page.goto('about:blank');
+    // ========================================
+    // INJECT CLIENT UI
+    // ========================================
+
+    // For future navigations
+    await page.evaluateOnNewDocument(CLIENT_UI_SCRIPT);
+
+    console.log('🌐 Navegador pronto. Navegando para página inicial...');
+
+    // Navigate to a page with a valid DOM (not about:blank which may have issues)
+    await page.goto('data:text/html,<html><head><title>Vibe Logger</title></head><body style="background:#1a1a1a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><h1>Vibe Logger Ready</h1></body></html>');
+
+    // Inject on initial page (evaluateOnNewDocument doesn't run on first page)
+    await page.evaluate(CLIENT_UI_SCRIPT);
+
+    console.log('✅ Interface carregada. Use os botões no canto inferior direito para gravar.');
 })();
