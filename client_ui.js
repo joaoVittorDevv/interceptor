@@ -4,6 +4,8 @@
  * 
  * This file is read via fs.readFileSync and injected into the browser.
  * It must NOT use require(), module.exports, or any Node.js syntax.
+ * 
+ * Security Patch: Trusted Types policy for CSP-secured sites (Google, YouTube)
  */
 
 (function () {
@@ -23,6 +25,28 @@
         return;
     }
     window.__vibeLoggerInitialized = true;
+
+    // ========================================
+    // TRUSTED TYPES POLICY (Security Bypass)
+    // Required for CSP-secured sites like Google/YouTube
+    // ========================================
+    var policy = { createHTML: function (string) { return string; } }; // Fallback
+
+    if (window.trustedTypes && window.trustedTypes.createPolicy) {
+        try {
+            policy = window.trustedTypes.createPolicy('vibe-logger-policy', {
+                createHTML: function (string) { return string; }
+            });
+            console.log('Vibe Logger: TrustedTypes policy created');
+        } catch (e) {
+            // Policy may already exist (page reload) - try to reuse or use fallback
+            console.warn('Vibe Logger: TrustedTypes policy issue (ignore if reload)', e.message);
+        }
+    }
+
+    var safeHTML = function (html) {
+        return policy.createHTML(html);
+    };
 
     // ========================================
     // HTML SANITIZATION (Clean Snapshots)
@@ -142,8 +166,12 @@
             'backdrop-filter: blur(5px); border-left: 3px solid ' + statusColor + ';' +
             'opacity: 1; transition: opacity 0.5s ease-out;' +
             'max-width: 400px; word-break: break-all;';
-        toast.innerHTML = '<span style="color:' + statusColor + ';font-weight:bold">[' + method + ']</span> ' +
-            shortUrl + ' <span style="color:' + statusColor + '">' + status + '</span>';
+
+        // Use safeHTML for TrustedTypes compliance
+        toast.innerHTML = safeHTML(
+            '<span style="color:' + statusColor + ';font-weight:bold">[' + method + ']</span> ' +
+            shortUrl + ' <span style="color:' + statusColor + '">' + status + '</span>'
+        );
 
         toastContainer.appendChild(toast);
 
@@ -259,34 +287,34 @@
                 'box-shadow: 0 10px 30px rgba(0,0,0,0.5); backdrop-filter: blur(5px);' +
                 'min-width: 200px; min-height: 80px; cursor: move;';
 
-            // Version label
+            // Version label - using safeHTML for TrustedTypes
             var versionLabel = document.createElement('div');
-            versionLabel.innerText = 'v1.1';
             versionLabel.style.cssText =
                 'position: absolute; top: 5px; right: 8px; font-size: 8px; color: #666;';
+            versionLabel.innerHTML = safeHTML('v1.1');
 
             // REC Button
             var btnRec = document.createElement('button');
-            btnRec.innerText = '● REC';
             btnRec.style.cssText =
                 'background: #ff4d4d; color: white; border: none; padding: 10px 20px;' +
                 'border-radius: 6px; cursor: pointer; font-weight: bold;' +
                 'display: ' + (isRecording ? 'none' : 'block') + ';';
+            btnRec.innerHTML = safeHTML('● REC');
 
             // SAVE Button
             var btnStop = document.createElement('button');
-            btnStop.innerText = '■ SAVE';
             btnStop.style.cssText =
                 'background: #4dff88; color: #000; border: none; padding: 10px 20px;' +
                 'border-radius: 6px; cursor: pointer; font-weight: bold;' +
                 'display: ' + (isRecording ? 'block' : 'none') + ';';
+            btnStop.innerHTML = safeHTML('■ SAVE');
 
             // Status Label
             var statusLabel = document.createElement('div');
-            statusLabel.innerText = isRecording ? 'Recording...' : 'Ready';
             statusLabel.style.cssText =
                 'color: ' + (isRecording ? 'red' : '#aaa') + '; font-size: 10px;' +
                 'margin-top: 5px; text-align: center;';
+            statusLabel.innerHTML = safeHTML(isRecording ? 'Recording...' : 'Ready');
 
             // Timer display
             var timerLabel = document.createElement('div');
@@ -299,7 +327,7 @@
                 var elapsed = Math.floor((Date.now() - startTime) / 1000);
                 var mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
                 var secs = (elapsed % 60).toString().padStart(2, '0');
-                timerLabel.innerText = mins + ':' + secs;
+                timerLabel.innerHTML = safeHTML(mins + ':' + secs);
             }
 
             function startTimer() {
@@ -336,11 +364,11 @@
                         btnRec.style.display = 'none';
                         btnStop.style.display = 'block';
                         div.style.border = '2px solid red';
-                        statusLabel.innerText = 'Recording...';
+                        statusLabel.innerHTML = safeHTML('Recording...');
                         statusLabel.style.color = 'red';
                         startTimer();
                     }).catch(function (err) {
-                        statusLabel.innerText = 'Error!';
+                        statusLabel.innerHTML = safeHTML('Error!');
                         statusLabel.style.color = '#ff6b6b';
                     });
                 }
@@ -353,15 +381,15 @@
                         btnStop.style.display = 'none';
                         btnRec.style.display = 'block';
                         div.style.border = '1px solid #444';
-                        statusLabel.innerText = 'Saved!';
+                        statusLabel.innerHTML = safeHTML('Saved!');
                         statusLabel.style.color = '#4dff88';
                         stopTimer();
                         setTimeout(function () {
-                            statusLabel.innerText = 'Ready';
+                            statusLabel.innerHTML = safeHTML('Ready');
                             statusLabel.style.color = '#aaa';
                         }, 2000);
                     }).catch(function (err) {
-                        statusLabel.innerText = 'Error!';
+                        statusLabel.innerHTML = safeHTML('Error!');
                         statusLabel.style.color = '#ff6b6b';
                     });
                 }
