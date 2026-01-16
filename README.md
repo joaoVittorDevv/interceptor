@@ -11,6 +11,7 @@ Vibe Logger captura não apenas vídeo, mas uma **timeline estruturada de intera
 - ✅ **Filtro Inteligente de Rede** — Ignora ruído de tracking/analytics, captura apenas chamadas de API relevantes
 - ✅ **Rastreamento de Cliques com Feedback Visual** — Efeito ripple vermelho para gravação de vídeo, seletores CSS registrados
 - ✅ **Snapshots HTML Limpos** — DOM sanitizado sem scripts, estilos ou SVGs
+- ✅ **Análise de Performance (ETL)** — Detecta gargalos de renderização, *Long Tasks* e scripts pesados, convertendo gigabytes de logs brutos em métricas de poucos KB.
 - ✅ **Bypass de CSP (Trusted Types)** — Funciona em sites de alta segurança como Google/YouTube
 - ✅ **Persistência de Estado** — Gravação continua entre navegações de página
 - ✅ **Logs Separados** — Timeline para consumo de IA, dump de console para debug
@@ -25,21 +26,21 @@ Vibe Logger captura não apenas vídeo, mas uma **timeline estruturada de intera
 │                    (Orquestrador Puppeteer)                     │
 │  • Inicialização e ciclo de vida do navegador                   │
 │  • Interceptação de rede + Filtro Inteligente (blocklist)       │
-│  • Bindings de funções Node ↔ Navegador                         │
+│  • Controle de Sessão (Start/Stop/Snapshot)                     │
 └─────────────────────────────────────────────────────────────────┘
                               │
               ┌───────────────┴───────────────┐
               ▼                               ▼
-┌─────────────────────────┐     ┌─────────────────────────┐
-│     client_ui.js        │     │       logger.js         │
-│   (Injeção no Browser)  │     │    (Camada de Dados)    │
-│                         │     │                         │
-│ • UI de Gravação (REC)  │     │ • Escrita timeline.json │
-│ • Toasts de Rede        │     │ • console_dump.log      │
-│ • Efeito Ripple         │     │ • Salvamento de snaps   │
-│ • Política Trusted Types│     │ • Sanitização de dados  │
-│ • Captura HTML limpo    │     │                         │
-└─────────────────────────┘     └─────────────────────────┘
+    ┌────────────────────┐          ┌────────────────────┐
+    │  trace_cleaner.js  │          │    client_ui.js    │
+    │     (Módulo ETL)   │          │ (Injected Script)  │
+    └────────────────────┘          └────────────────────┘
+              │                               │
+              ▼                               ▼
+    ┌────────────────────┐          ┌────────────────────┐
+    │   timeline.json    │◀─────────│ Eventos de DOM     │
+    │ (Output Unificado) │          │ Cliques & Scroll   │
+    └────────────────────┘          └────────────────────┘
 ```
 
 ---
@@ -135,6 +136,27 @@ captures/
       "file": "snap_clean_2026-01-14T15-23-07-789Z.html",
       "trigger": "navigation_complete"
     }
+  },
+  {
+    "timestamp": "2026-01-16T13:25:03.779Z",
+    "type": "PERFORMANCE_SUMMARY",
+    "data": {
+      "summary_type": "performance_bottlenecks",
+      "metrics": {
+        "total_blocking_time": 542.25,
+        "long_tasks_count": 11,
+        "categories": {
+          "scripting": 1870.35,
+          "rendering": 303.23,
+          "painting": 49.65
+        },
+        "offenders": [
+          "web-animations-next-lite.min.js (163.9ms)",
+          "heavy-computation.js (93.7ms)"
+        ]
+      },
+      "analysis_hint": "High main thread blocking detected. UI may feel unresponsive."
+    }
   }
 ]
 ```
@@ -146,6 +168,7 @@ captures/
 | `USER_INTERACTION` | Eventos de clique com coordenadas e seletor CSS |
 | `NETWORK_REQUEST` | Chamadas XHR/Fetch filtradas com snippets da resposta (máx 1KB) |
 | `SNAPSHOT` | Referência ao arquivo HTML limpo, acionado por navegação ou erros |
+| `PERFORMANCE_SUMMARY` | Resumo estatístico de uso de CPU, renderização e bloqueios (gerado ao final da sessão) |
 | `CONSOLE_ERROR` | Erros críticos (também em console_dump.log com stack trace completo) |
 
 ---

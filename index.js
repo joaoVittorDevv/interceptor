@@ -9,6 +9,7 @@ const fs = require('fs');
 
 // Import data layer (Node module - CommonJS OK here)
 const logger = require('./logger');
+const TraceCleaner = require('./trace_cleaner');
 
 // Read client UI script (pure vanilla JS file)
 const CLIENT_UI_SCRIPT = fs.readFileSync(path.join(__dirname, 'client_ui.js'), 'utf8');
@@ -107,6 +108,8 @@ if (!fs.existsSync(OUTPUT_DIR)) {
 
 // Global recording state (The Handshake)
 let globalIsRecording = false;
+let currentTracePath = null;
+let isStopping = false;
 
 (async () => {
     console.log('🚀 Iniciando Vibe Logger v1.1 (Smart Context)...');
@@ -174,19 +177,101 @@ let globalIsRecording = false;
     // ========================================
 
     // Start Recording
-    await page.exposeFunction('nodeStartRecording', () => {
+    await page.exposeFunction('nodeStartRecording', async () => {
         globalIsRecording = true;
-        logger.initSession(OUTPUT_DIR);
+        const sessionFolder = logger.initSession(OUTPUT_DIR);
+
+        // Performance Tracing Setup
+        currentTracePath = path.join(sessionFolder, 'raw_trace_temp.json');
+        try {
+            await page.tracing.start({
+                path: currentTracePath,
+                screenshots: false,
+                categories: [
+                    'devtools.timeline',
+                    'v8.execute',
+                    'disabled-by-default-devtools.timeline',
+                    'toplevel',
+                    'blink.user_timing',
+                    'latencyInfo'
+                ]
+            });
+        } catch (e) {
+            console.error('⚠️ Failed to start tracing:', e.message);
+        }
+
         console.log('🔴 GRAVAÇÃO INICIADA');
         return true;
     });
 
-    // Stop Recording
+    // Stop Recording - Versão com Timeout e Concorrência (v1.3)
     await page.exposeFunction('nodeStopRecording', async () => {
+        // 1. Prevenção de Múltiplos Cliques (Concurrency Lock)
+        if (isStopping) {
+            console.warn('⚠️ Processo de parada já em andamento. Ignorando clique duplicado.');
+            return null;
+        }
+        isStopping = true;
+        console.log('🛑 Solicitada parada de gravação...');
+
         globalIsRecording = false;
-        const folder = logger.endSession();
-        console.log(`⏹ GRAVAÇÃO PARADA. Arquivos salvos em: ${folder}`);
-        return folder;
+        let traceSummary = null;
+
+        // 2. Parada do Tracing com Timeout (Race Condition)
+        if (currentTracePath) {
+            console.log('⏳ Parando Tracing do Chrome (Timeout: 5s)...');
+
+            try {
+                // Cria uma promessa que rejeita após 5 segundos
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Tracing stop timed out')), 5000)
+                );
+
+                // Competição: O que terminar primeiro ganha (Stop ou Timeout)
+                await Promise.race([
+                    page.tracing.stop(),
+                    timeoutPromise
+                ]);
+
+                console.log('📉 Tracing parado com sucesso. Iniciando ETL...');
+
+                // Só executa o ETL se o arquivo existir e não tivermos estourado o tempo
+                if (fs.existsSync(currentTracePath)) {
+                    traceSummary = TraceCleaner.process(currentTracePath);
+
+                    if (traceSummary) {
+                        logger.logEvent('PERFORMANCE_SUMMARY', traceSummary);
+                        console.log('✅ Performance injetada na timeline.');
+                    }
+
+                    // Limpeza do arquivo temporário
+                    try { fs.unlinkSync(currentTracePath); } catch (err) { console.error('⚠️ Falha ao deletar trace temp:', err.message); }
+                }
+
+            } catch (e) {
+                console.error('⚠️ ALERTA DE PERFORMANCE:', e.message);
+                console.log('⏩ Pulando etapa de tracing para garantir salvamento dos dados.');
+                // Não relançamos o erro para garantir que o código abaixo (logger.endSession) seja executado
+            } finally {
+                currentTracePath = null;
+            }
+        }
+
+        // 3. Finalização da Sessão (Código Indestrutível)
+        console.log('💾 Salvando sessão no disco...');
+        try {
+            const folder = logger.endSession();
+            console.log(`✅ SESSÃO SALVA COM SUCESSO: ${folder}`);
+
+            // Reset do lock para permitir novas gravações futuras (se necessário reiniciar a página)
+            isStopping = false;
+
+            return folder;
+        } catch (fatalError) {
+            console.error('❌ ERRO FATAL AO SALVAR SESSÃO:', fatalError);
+            isStopping = false;
+            return null;
+        }
     });
 
     // Get Recording State (The Handshake)
