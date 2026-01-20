@@ -2,3 +2,7 @@ captures/
 node_modules/
 .env
 *.log
+.specify/
+.gemini/
+.agent/
+config.json # User-specific configuration (see config.example.json)

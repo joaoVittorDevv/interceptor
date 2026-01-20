@@ -192,8 +192,37 @@ Usa **política de Trusted Types** (`vibe-logger-policy`) para injetar a UI em s
 
 ## 🛠️ Configuração
 
-Edite as constantes em `index.js`:
+### Método Recomendado: Arquivo de Configuração Externo
 
+1. Copie o arquivo de exemplo:
+   ```bash
+   cp config.example.json config.json
+   ```
+
+2. Edite `config.json` com suas preferências:
+   ```json
+   {
+     "urlBlocklist": ["my-tracker.com", "custom-analytics"],
+     "ignoredExtensions": [".png", ".jpg"],
+     "maxResponseSnippet": 2048
+   }
+   ```
+
+3. Reinicie a aplicação para aplicar as mudanças.
+
+**Campos Disponíveis:**
+- `urlBlocklist`: Array de padrões de URL para ignorar
+- `ignoredExtensions`: Array de extensões de arquivo para ignorar (incluir o ponto)
+- `maxResponseSnippet`: Tamanho máximo do snippet de resposta em bytes
+
+**Comportamento de Fallback:**
+- Se `config.json` não existir, valores padrão serão usados
+- Se o arquivo contiver JSON inválido, valores padrão serão usados
+- Se um campo tiver tipo inválido, o valor padrão daquele campo será usado
+
+### Método Alternativo: Edição Direta do Código
+
+Para usuários avançados, as constantes padrão podem ser editadas em `index.js`:
 ```javascript
 // Adicionar URLs para ignorar
 const URL_BLOCKLIST = ['google-analytics', 'doubleclick', ...];

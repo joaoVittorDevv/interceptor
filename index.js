@@ -16,45 +16,138 @@ const CLIENT_UI_SCRIPT = fs.readFileSync(path.join(__dirname, 'client_ui.js'), '
 
 // Configuration
 const OUTPUT_DIR = path.join(__dirname, 'captures');
+const CONFIG_FILE = path.join(__dirname, 'config.json');
 
 // ========================================
-// SMART FILTER CONFIGURATION
+// CONFIGURATION LOADER
 // ========================================
 
-// URL patterns to IGNORE (tracking, analytics, noise)
-const URL_BLOCKLIST = [
-    'google-analytics',
-    'googletagmanager',
-    'doubleclick',
-    'facebook',
-    'fbcdn',
-    'metrics',
-    'telemetry',
-    'gen_204',
-    'ping',
-    'beacon',
-    'collect',
-    'analytics',
-    'tracking',
-    'hotjar',
-    'clarity',
-    'segment',
-    'mixpanel',
-    'amplitude',
-    'sentry',
-    'bugsnag',
-    'newrelic',
-    'datadoghq'
-];
+const DEFAULT_CONFIG = {
+    urlBlocklist: [
+        'google-analytics',
+        'googletagmanager',
+        'doubleclick',
+        'facebook',
+        'fbcdn',
+        'metrics',
+        'telemetry',
+        'gen_204',
+        'ping',
+        'beacon',
+        'collect',
+        'analytics',
+        'tracking',
+        'hotjar',
+        'clarity',
+        'segment',
+        'mixpanel',
+        'amplitude',
+        'sentry',
+        'bugsnag',
+        'newrelic',
+        'datadoghq'
+    ],
+    ignoredExtensions: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp4', '.mp3', '.wav', '.webm', '.css'],
+    maxResponseSnippet: 1024
+};
+
+function validateUrlBlocklist(list) {
+    if (!Array.isArray(list)) return false;
+    return list.every(item => typeof item === 'string');
+}
+
+function validateIgnoredExtensions(list) {
+    if (!Array.isArray(list)) return false;
+    return list.every(item => typeof item === 'string' && item.startsWith('.'));
+}
+
+function validateMaxResponseSnippet(value) {
+    return typeof value === 'number' && value > 0;
+}
+
+function loadConfiguration() {
+    try {
+        if (!fs.existsSync(CONFIG_FILE)) {
+            console.log('ℹ️ No config.json found, using default configuration');
+            return DEFAULT_CONFIG;
+        }
+
+        const fileContent = fs.readFileSync(CONFIG_FILE, 'utf8');
+
+        // Handle empty file
+        if (!fileContent.trim()) {
+            console.log('ℹ️ Empty configuration in config.json, using defaults');
+            return DEFAULT_CONFIG;
+        }
+
+        let userConfig;
+        try {
+            userConfig = JSON.parse(fileContent);
+        } catch (parseError) {
+            console.error(`❌ Failed to parse config.json: ${parseError.message}`);
+            console.log('Using default configuration');
+            return DEFAULT_CONFIG;
+        }
+
+        console.log('✅ Configuration loaded from config.json');
+
+        const finalConfig = { ...DEFAULT_CONFIG };
+        const validKeys = Object.keys(DEFAULT_CONFIG);
+        const userKeys = Object.keys(userConfig);
+
+        // Check for unknown fields
+        for (const key of userKeys) {
+            if (!validKeys.includes(key)) {
+                console.warn(`⚠️ Warning: Unknown configuration key "${key}" in config.json`);
+            }
+        }
+
+        // Validate and apply urlBlocklist
+        if (userConfig.urlBlocklist !== undefined) {
+            if (validateUrlBlocklist(userConfig.urlBlocklist)) {
+                finalConfig.urlBlocklist = userConfig.urlBlocklist;
+            } else {
+                console.warn('⚠️ Invalid urlBlocklist in config.json (expected array of strings), using default');
+            }
+        }
+
+        // Validate and apply ignoredExtensions
+        if (userConfig.ignoredExtensions !== undefined) {
+            if (validateIgnoredExtensions(userConfig.ignoredExtensions)) {
+                finalConfig.ignoredExtensions = userConfig.ignoredExtensions;
+            } else {
+                console.warn('⚠️ Invalid ignoredExtensions in config.json (expected array of strings starting with .), using default');
+            }
+        }
+
+        // Validate and apply maxResponseSnippet
+        if (userConfig.maxResponseSnippet !== undefined) {
+            if (validateMaxResponseSnippet(userConfig.maxResponseSnippet)) {
+                finalConfig.maxResponseSnippet = userConfig.maxResponseSnippet;
+            } else {
+                console.warn('⚠️ Invalid maxResponseSnippet in config.json (expected positive number), using default');
+            }
+        }
+
+        return finalConfig;
+
+    } catch (error) {
+        // Handle permission errors or other FS issues
+        console.error(`❌ Cannot read config.json: ${error.message}, using defaults`);
+        return DEFAULT_CONFIG;
+    }
+}
+
+// Load runtime configuration
+const config = loadConfiguration();
+
+// Destructure into constants for backward compatibility
+const URL_BLOCKLIST = config.urlBlocklist;
+const IGNORED_EXTENSIONS = config.ignoredExtensions;
+const MAX_RESPONSE_SNIPPET = config.maxResponseSnippet;
 
 // Resource types to IGNORE (static assets)
 const IGNORED_RESOURCE_TYPES = ['image', 'font', 'media', 'stylesheet'];
-
-// Extensions to IGNORE
-const IGNORED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp4', '.mp3', '.wav', '.webm', '.css'];
-
-// Max response snippet size (1KB)
-const MAX_RESPONSE_SNIPPET = 1024;
 
 // ========================================
 // HELPER FUNCTIONS
