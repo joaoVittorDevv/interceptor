@@ -7,7 +7,7 @@ node_modules/
 .agent/
 config.json # User-specific configuration (see config.example.json)
 specs/
-
+openspec/
 # Vue.js / Vite build artifacts
 dist/
 .vite/
