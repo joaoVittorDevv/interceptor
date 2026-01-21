@@ -4,6 +4,7 @@ const compression = require('compression');
 const fs = require('fs').promises;
 const path = require('path');
 const { spawn } = require('child_process');
+const archiver = require('archiver');
 
 // ========================================
 // CAPTURE PROCESS MANAGEMENT (T003-T007)
@@ -149,16 +150,45 @@ app.use(cors({ origin: 'http://localhost:5173' }));
 app.use(compression());
 app.use(express.json());
 
+/**
+ * Parse session folder timestamp to ISO string
+ * @param {string} sessionId - Session folder name (e.g., session_2026-01-21T19-44-03-734Z)
+ * @returns {string} ISO timestamp string (e.g., 2026-01-21T19:44:03.734Z)
+ * @throws {Error} If sessionId format is invalid
+ */
+function parseSessionTimestamp(sessionId) {
+    // Validate format: session_YYYY-MM-DDTHH-mm-ss-sssZ
+    const sessionIdPattern = /^session_(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/;
+    const match = sessionId.match(sessionIdPattern);
+
+    if (!match) {
+        throw new Error(`Invalid session ID format: ${sessionId}`);
+    }
+
+    const [, datePart, hours, minutes, seconds, milliseconds] = match;
+
+    // Reconstruct as ISO string: YYYY-MM-DDTHH:mm:ss.sssZ
+    const isoString = `${datePart}T${hours}:${minutes}:${seconds}.${milliseconds}Z`;
+
+    // Validate it's a valid date
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) {
+        throw new Error(`Invalid date in session ID: ${sessionId}`);
+    }
+
+    return isoString;
+}
+
 // GET /api/sessions - List all sessions
 app.get('/api/sessions', async (req, res) => {
     try {
         const capturesDir = path.join(__dirname, 'captures');
         const folders = await fs.readdir(capturesDir);
 
-        const sessions = await Promise.all(
-            folders
-                .filter(name => name.startsWith('session_'))
-                .map(async (sessionId) => {
+        const sessionPromises = folders
+            .filter(name => name.startsWith('session_'))
+            .map(async (sessionId) => {
+                try {
                     const timelineFile = path.join(capturesDir, sessionId, 'timeline.json');
                     let eventCount = 0;
 
@@ -170,9 +200,8 @@ app.get('/api/sessions', async (req, res) => {
                         console.warn(`Failed to read timeline for ${sessionId}:`, err.message);
                     }
 
-                    // Extract timestamp from sessionId
-                    const timestampStr = sessionId.replace('session_', '').replace(/-/g, ':');
-                    const timestamp = new Date(timestampStr).toISOString();
+                    // Parse timestamp from sessionId
+                    const timestamp = parseSessionTimestamp(sessionId);
 
                     return {
                         sessionId,
@@ -180,8 +209,17 @@ app.get('/api/sessions', async (req, res) => {
                         eventCount,
                         filePath: `captures/${sessionId}/timeline.json`
                     };
-                })
-        );
+                } catch (err) {
+                    // Log warning and skip this session if parsing fails
+                    console.warn(`Failed to process session ${sessionId}:`, err.message);
+                    return null;
+                }
+            });
+
+        const sessionsWithNulls = await Promise.all(sessionPromises);
+
+        // Filter out failed sessions (null values)
+        const sessions = sessionsWithNulls.filter(session => session !== null);
 
         // Sort by timestamp descending (newest first)
         sessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
@@ -256,6 +294,127 @@ app.get('/api/sessions/:sessionId/timeline', async (req, res) => {
         console.error('Error loading timeline:', error);
         res.status(500).json({
             error: 'Failed to load timeline',
+            message: error.message
+        });
+    }
+});
+
+// GET /api/sessions/:sessionId/download - Download session as ZIP
+app.get('/api/sessions/:sessionId/download', async (req, res) => {
+    const { sessionId } = req.params;
+
+    // Validate session ID format
+    const sessionIdPattern = /^session_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
+    if (!sessionIdPattern.test(sessionId)) {
+        return res.status(400).json({
+            error: 'Invalid session ID',
+            message: 'Session ID must match pattern: session_YYYY-MM-DDTHH-mm-ss-SSSZ'
+        });
+    }
+
+    const sessionDir = path.join(__dirname, 'captures', sessionId);
+
+    try {
+        // Check if session directory exists
+        await fs.access(sessionDir);
+
+        // Set response headers for ZIP download
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${sessionId}.zip"`);
+
+        // Create archiver instance
+        const archive = archiver('zip', {
+            zlib: { level: 9 } // Maximum compression
+        });
+
+        // Handle archiver errors
+        archive.on('error', (err) => {
+            console.error('Archiver error:', err);
+            if (!res.headersSent) {
+                res.status(500).json({
+                    error: 'Failed to create ZIP archive',
+                    message: err.message
+                });
+            }
+        });
+
+        // Handle archiver warnings
+        archive.on('warning', (err) => {
+            if (err.code === 'ENOENT') {
+                console.warn('Archiver warning:', err);
+            } else {
+                throw err;
+            }
+        });
+
+        // Pipe archive to response
+        archive.pipe(res);
+
+        // Add session directory to archive
+        archive.directory(sessionDir, false);
+
+        // Finalize the archive
+        await archive.finalize();
+
+        console.log(`📦 Session ${sessionId} downloaded successfully`);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return res.status(404).json({
+                error: 'Session not found',
+                message: `No session found with ID: ${sessionId}`
+            });
+        }
+
+        console.error('Error creating session download:', error);
+        if (!res.headersSent) {
+            res.status(500).json({
+                error: 'Failed to download session',
+                message: error.message
+            });
+        }
+    }
+});
+
+// DELETE /api/sessions/:sessionId - Delete session
+app.delete('/api/sessions/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+
+    // Validate session ID format
+    const sessionIdPattern = /^session_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
+    if (!sessionIdPattern.test(sessionId)) {
+        return res.status(400).json({
+            error: 'Invalid session ID',
+            message: 'Session ID must match pattern: session_YYYY-MM-DDTHH-mm-ss-SSSZ'
+        });
+    }
+
+    const sessionDir = path.join(__dirname, 'captures', sessionId);
+
+    try {
+        // Check if session directory exists
+        await fs.access(sessionDir);
+
+        // Delete the session directory recursively
+        await fs.rm(sessionDir, { recursive: true, force: true });
+
+        console.log(`🗑️  Session ${sessionId} deleted successfully`);
+
+        res.status(200).json({
+            success: true,
+            message: `Session ${sessionId} deleted successfully`,
+            sessionId
+        });
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return res.status(404).json({
+                error: 'Session not found',
+                message: `No session found with ID: ${sessionId}`
+            });
+        }
+
+        console.error('Error deleting session:', error);
+        res.status(500).json({
+            error: 'Failed to delete session',
             message: error.message
         });
     }

@@ -18,6 +18,11 @@ Vibe Logger captura não apenas vídeo, mas uma **timeline estruturada de intera
 - ✅ **Logs Separados** — Timeline para consumo de IA, dump de console para debug
 
 ### Frontend (Visualização) 🆕
+- ✅ **Dashboard Moderno com Tailwind CSS** — Interface redesenhada com design mockup-faithful
+- ✅ **Dark Mode** — Alternância entre temas claro/escuro com persistência em localStorage
+- ✅ **Gerenciamento de Sessões** — Download (ZIP), visualização e exclusão de sessões
+- ✅ **Busca e Paginação** — Filtro em tempo real por nome de sessão e paginação client-side
+- ✅ **Controle de Navegador** — Botão "Gerenciar Navegador" para abrir/focar instância Puppeteer
 - ✅ **Visualização de Timeline Interativa** — Interface web para explorar sessões capturadas
 - ✅ **Lista de Sessões** — Visualize todas as sessões com contagem de eventos e timestamps
 - ✅ **Eventos Color-Coded** — Identificação visual por tipo (cliques, rede, snapshots, performance, erros)
@@ -25,7 +30,6 @@ Vibe Logger captura não apenas vídeo, mas uma **timeline estruturada de intera
 - ✅ **Virtual Scrolling** — Performance otimizada para 1000+ eventos
 - ✅ **Timestamps Formatados** — Datas legíveis em formato "yyyy-MM-dd HH:mm:ss.SSS"
 - ✅ **Loading States** — Indicadores visuais durante carregamento de dados
-- ✅ **🆕 Controle de Gravação via Web** — Inicie e pare capturas diretamente na interface
 
 ---
 
@@ -65,6 +69,10 @@ make dev
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
+| `GET` | `/api/sessions` | Lista todas as sessões |
+| `GET` | `/api/sessions/:id/timeline` | Retorna dados da timeline |
+| `GET` | `/api/sessions/:id/download` | Download da sessão como ZIP 🆕 |
+| `DELETE` | `/api/sessions/:id` | Deleta uma sessão 🆕 |
 | `POST` | `/api/capture/start` | Inicia captura (abre Puppeteer) |
 | `POST` | `/api/capture/stop` | Para captura (fecha Puppeteer) |
 | `GET` | `/api/capture/status` | Retorna estado atual |
