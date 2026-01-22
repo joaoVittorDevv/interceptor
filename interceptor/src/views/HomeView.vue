@@ -143,12 +143,40 @@ async function manageBrowser() {
     }
     
     const result = await response.json()
-    console.log('Browser opened:', result)
+    // console.log('Browser opened:', result)
   } catch (error) {
     console.error('Browser management error:', error)
     alert(`Failed to manage browser: ${error instanceof Error ? error.message : 'Unknown error'}`)
   }
 }
+
+// Hard Reset Logic
+const showDeleteModal = ref(false)
+const isDeleting = ref(false)
+
+async function handleReset() {
+  isDeleting.value = true
+  try {
+    const response = await fetch('http://localhost:3001/api/sessions/reset', {
+      method: 'DELETE'
+    })
+    
+    if (!response.ok) {
+      throw new Error('Failed to reset system')
+    }
+    
+    // Success flow
+    showDeleteModal.value = false
+    await sessionStore.loadSessions() // Refresh list (should be empty)
+    
+  } catch (error) {
+    console.error('Reset error:', error)
+    alert('Failed to execute Hard Reset. Please check server logs.')
+  } finally {
+    isDeleting.value = false
+  }
+}
+
 </script>
 
 <template>
@@ -223,6 +251,26 @@ async function manageBrowser() {
 
         <!-- Search and Filter Controls -->
         <div class="flex gap-3">
+           <!-- Refresh Button -->
+          <button 
+            @click="sessionStore.loadSessions()"
+            class="p-2 border border-border-light dark:border-border-dark rounded-lg bg-white dark:bg-surface-dark text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            title="Atualizar Lista"
+          >
+            <span class="material-icons-round">refresh</span>
+          </button>
+
+          <!-- Hard Reset Button -->
+          <button 
+            @click="showDeleteModal = true"
+            class="p-2 border border-red-200 dark:border-red-900/50 rounded-lg bg-white dark:bg-surface-dark text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+            title="Deletar Tudo (Hard Reset)"
+          >
+            <span class="material-icons-round">delete_forever</span>
+          </button>
+
+          <div class="h-8 w-px bg-border-light dark:bg-border-dark hidden sm:block mx-1"></div>
+
           <div class="relative">
             <input 
               v-model="searchQuery"
@@ -235,6 +283,42 @@ async function manageBrowser() {
           <button class="p-2 border border-border-light dark:border-border-dark rounded-lg bg-white dark:bg-surface-dark text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
             <span class="material-icons-round">filter_list</span>
           </button>
+        </div>
+      </div>
+
+      <!-- Delete Confirmation Modal -->
+      <div v-if="showDeleteModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+        <div class="bg-white dark:bg-surface-dark rounded-xl shadow-2xl max-w-md w-full border border-gray-200 dark:border-gray-700 overflow-hidden transform transition-all">
+          <div class="p-6">
+            <div class="flex items-center gap-4 mb-4">
+              <div class="bg-red-100 dark:bg-red-900/30 p-3 rounded-full">
+                <span class="material-icons-round text-red-600 dark:text-red-400 text-2xl">warning</span>
+              </div>
+              <h3 class="text-xl font-bold text-gray-900 dark:text-white">Atenção Crítica</h3>
+            </div>
+            <p class="text-gray-600 dark:text-gray-300 mb-6">
+              Você está prestes a realizar um <strong class="text-red-600 dark:text-red-400">Hard Reset</strong>.
+              <br><br>
+              Isso apagará <strong>TODAS</strong> as sessões, arquivos capturados e logs do banco de dados permanentemente. Esta ação é irreversível.
+            </p>
+            <div class="flex justify-end gap-3">
+              <button 
+                @click="showDeleteModal = false"
+                class="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg font-medium transition-colors"
+                :disabled="isDeleting"
+              >
+                Cancelar
+              </button>
+              <button 
+                @click="handleReset"
+                class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium shadow-lg shadow-red-500/30 flex items-center gap-2 transition-transform active:scale-95"
+                :disabled="isDeleting"
+              >
+                <span v-if="isDeleting" class="animate-spin material-icons-round text-sm">sync</span>
+                <span v-else>Confirmar Deleção</span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

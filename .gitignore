@@ -14,6 +14,15 @@ AGENTS.md
 dist/
 .vite/
 coverage/
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Logs e arquivos do sistema
+node_modules/
+npm-debug.log*
+.DS_Store
 
 # IDE
 .vscode/

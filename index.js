@@ -68,7 +68,7 @@ function validateMaxResponseSnippet(value) {
 function loadConfiguration() {
     try {
         if (!fs.existsSync(CONFIG_FILE)) {
-            console.log('ℹ️ No config.json found, using default configuration');
+            // console.log('ℹ️ No config.json found, using default configuration');
             return DEFAULT_CONFIG;
         }
 
@@ -76,7 +76,7 @@ function loadConfiguration() {
 
         // Handle empty file
         if (!fileContent.trim()) {
-            console.log('ℹ️ Empty configuration in config.json, using defaults');
+            // console.log('ℹ️ Empty configuration in config.json, using defaults');
             return DEFAULT_CONFIG;
         }
 
@@ -85,11 +85,11 @@ function loadConfiguration() {
             userConfig = JSON.parse(fileContent);
         } catch (parseError) {
             console.error(`❌ Failed to parse config.json: ${parseError.message}`);
-            console.log('Using default configuration');
+            // console.log('Using default configuration');
             return DEFAULT_CONFIG;
         }
 
-        console.log('✅ Configuration loaded from config.json');
+        // console.log('✅ Configuration loaded from config.json');
 
         const finalConfig = { ...DEFAULT_CONFIG };
         const validKeys = Object.keys(DEFAULT_CONFIG);
@@ -205,7 +205,7 @@ let currentTracePath = null;
 let isStopping = false;
 
 (async () => {
-    console.log('🚀 Iniciando Vibe Logger v1.1 (Smart Context)...');
+    // console.log('🚀 Iniciando Vibe Logger v1.1 (Smart Context)...');
 
     let browser;
     try {
@@ -234,9 +234,9 @@ let isStopping = false;
         const type = msg.type();
 
         // Show our debug logs
-        if (text.includes('Vibe Logger') || text.includes('---')) {
-            console.log('🔵 BROWSER:', text);
-        }
+        // if (text.includes('Vibe Logger') || text.includes('---')) {
+        //     console.log('🔵 BROWSER:', text);
+        // }
 
         // Log to logger if recording (separate console dump)
         if (globalIsRecording) {
@@ -245,7 +245,7 @@ let isStopping = false;
     });
 
     page.on('pageerror', err => {
-        console.log('🔴 BROWSER ERROR:', err.toString());
+        // console.log('🔴 BROWSER ERROR:', err.toString());
         if (globalIsRecording) {
             logger.logConsole('error', err.toString(), null);
         }
@@ -253,9 +253,9 @@ let isStopping = false;
 
     // Handle browser disconnection
     browser.on('disconnected', () => {
-        console.log('🔌 Browser disconnected');
+        // console.log('🔌 Browser disconnected');
         if (globalIsRecording) {
-            console.log('⚠️ Recording was active, attempting to save...');
+            // console.log('⚠️ Recording was active, attempting to save...');
             try {
                 logger.endSession();
             } catch (e) {
@@ -293,26 +293,28 @@ let isStopping = false;
             console.error('⚠️ Failed to start tracing:', e.message);
         }
 
-        console.log('🔴 GRAVAÇÃO INICIADA');
+        // console.log('🔴 GRAVAÇÃO INICIADA');
         return true;
     });
 
-    // Stop Recording - Versão com Timeout e Concorrência (v1.3)
-    await page.exposeFunction('nodeStopRecording', async () => {
+    // ========================================
+    // GRACEFUL SHUTDOWN LOGIC
+    // ========================================
+    async function gracefulShutdown(signal = null) {
         // 1. Prevenção de Múltiplos Cliques (Concurrency Lock)
         if (isStopping) {
-            console.warn('⚠️ Processo de parada já em andamento. Ignorando clique duplicado.');
+            // console.warn(`⚠️ Processo de parada já em andamento (${signal || 'UI'}). Ignorando duplicata.`);
             return null;
         }
         isStopping = true;
-        console.log('🛑 Solicitada parada de gravação...');
+        // console.log(`🛑 Solicitada parada de gravação (${signal || 'UI'})...`);
 
         globalIsRecording = false;
         let traceSummary = null;
 
         // 2. Parada do Tracing com Timeout (Race Condition)
         if (currentTracePath) {
-            console.log('⏳ Parando Tracing do Chrome (Timeout: 5s)...');
+            // console.log('⏳ Parando Tracing do Chrome (Timeout: 5s)...');
 
             try {
                 // Cria uma promessa que rejeita após 5 segundos
@@ -326,7 +328,7 @@ let isStopping = false;
                     timeoutPromise
                 ]);
 
-                console.log('📉 Tracing parado com sucesso. Iniciando ETL...');
+                // console.log('📉 Tracing parado com sucesso. Iniciando ETL...');
 
                 // Só executa o ETL se o arquivo existir e não tivermos estourado o tempo
                 if (fs.existsSync(currentTracePath)) {
@@ -334,7 +336,7 @@ let isStopping = false;
 
                     if (traceSummary) {
                         logger.logEvent('PERFORMANCE_SUMMARY', traceSummary);
-                        console.log('✅ Performance injetada na timeline.');
+                        // console.log('✅ Performance injetada na timeline.');
                     }
 
                     // Limpeza do arquivo temporário
@@ -343,7 +345,7 @@ let isStopping = false;
 
             } catch (e) {
                 console.error('⚠️ ALERTA DE PERFORMANCE:', e.message);
-                console.log('⏩ Pulando etapa de tracing para garantir salvamento dos dados.');
+                // console.log('⏩ Pulando etapa de tracing para garantir salvamento dos dados.');
                 // Não relançamos o erro para garantir que o código abaixo (logger.endSession) seja executado
             } finally {
                 currentTracePath = null;
@@ -351,10 +353,14 @@ let isStopping = false;
         }
 
         // 3. Finalização da Sessão (Código Indestrutível)
-        console.log('💾 Salvando sessão no disco...');
+        // console.log('💾 Salvando sessão no disco...');
         try {
             const folder = logger.endSession();
-            console.log(`✅ SESSÃO SALVA COM SUCESSO: ${folder}`);
+            // console.log(`✅ SESSÃO SALVA COM SUCESSO: ${folder}`);
+
+            // CRITICAL: Ensure this is printed for the parent process scanner
+            // The folder variable contains "session_DATE...".
+            // The regex in api-server expects this format in stdout.
 
             // Reset do lock para permitir novas gravações futuras (se necessário reiniciar a página)
             isStopping = false;
@@ -365,6 +371,32 @@ let isStopping = false;
             isStopping = false;
             return null;
         }
+    }
+
+    // Capture Signals
+    process.on('SIGTERM', async () => {
+        // console.log('📡 SIGTERM recebido. Iniciando encerramento gracioso...');
+        if (globalIsRecording) {
+            await gracefulShutdown('SIGTERM');
+        } else {
+            // console.log('ℹ️ Nenhuma gravação ativa. Encerrando.');
+        }
+        process.exit(0);
+    });
+
+    process.on('SIGINT', async () => {
+        // console.log('📡 SIGINT recebido. Iniciando encerramento gracioso...');
+        if (globalIsRecording) {
+            await gracefulShutdown('SIGINT');
+        } else {
+            // console.log('ℹ️ Nenhuma gravação ativa. Encerrando.');
+        }
+        process.exit(0);
+    });
+
+    // Stop Recording - Versão com Timeout e Concorrência (v1.3)
+    await page.exposeFunction('nodeStopRecording', async () => {
+        return await gracefulShutdown('UI');
     });
 
     // Get Recording State (The Handshake)
@@ -491,9 +523,9 @@ let isStopping = false;
             }
         }
 
-        // Minimal console log
-        const shortUrl = url.length > 60 ? url.substring(0, 57) + '...' : url;
-        console.log(`⚡ [${method}] ${status} ${shortUrl}`);
+        // Minimal console log (DISABLED)
+        // const shortUrl = url.length > 60 ? url.substring(0, 57) + '...' : url;
+        // console.log(`⚡ [${method}] ${status} ${shortUrl}`);
     });
 
     // ========================================
@@ -521,7 +553,7 @@ let isStopping = false;
     // For future navigations
     await page.evaluateOnNewDocument(CLIENT_UI_SCRIPT);
 
-    console.log('🌐 Navegador pronto. Navegando para página inicial...');
+    // console.log('🌐 Navegador pronto. Navegando para página inicial...');
 
     // Navigate to a page with a valid DOM
     await page.goto('data:text/html,<html><head><title>Vibe Logger</title></head><body style="background:#1a1a1a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><h1>Vibe Logger v1.1 Ready</h1></body></html>');
@@ -529,5 +561,5 @@ let isStopping = false;
     // Inject on initial page
     await page.evaluate(CLIENT_UI_SCRIPT);
 
-    console.log('✅ Interface carregada. Use os botões no canto inferior direito para gravar.');
+    // console.log('✅ Interface carregada. Use os botões no canto inferior direito para gravar.');
 })();

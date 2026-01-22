@@ -5,6 +5,11 @@ const fs = require('fs').promises;
 const path = require('path');
 const { spawn } = require('child_process');
 const archiver = require('archiver');
+const db = require('./db');
+const { scanSession, scanAllSessions } = require('./file_scanner');
+
+// Execute scanAllSessions() UMA VEZ ao iniciar o server para garantir sincronia
+scanAllSessions();
 
 // ========================================
 // CAPTURE PROCESS MANAGEMENT (T003-T007)
@@ -58,10 +63,14 @@ async function startCapture() {
         // Capture stdout for session ID detection
         let stdoutBuffer = '';
         child.stdout.on('data', (data) => {
-            stdoutBuffer += data.toString();
-            // Look for session save message
-            const match = stdoutBuffer.match(/SESSÃO SALVA COM SUCESSO: .*[\/\\](session_[^\s]+)/);
-            if (match && activeCapture) {
+            const chunk = data.toString();
+            stdoutBuffer += chunk;
+
+            // Look for session save message - Robust Logic
+            // Matches: ... session_2026-01-22T14-00-00-000Z ...
+            const match = stdoutBuffer.match(/(session_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)/);
+            if (match && activeCapture && !activeCapture.lastSessionId) {
+                // ID detected
                 activeCapture.lastSessionId = match[1];
             }
         });
@@ -70,9 +79,29 @@ async function startCapture() {
             console.error(`[Capture stderr]: ${data}`);
         });
 
-        // Handle process exit (T007: crash detection)
+        // Handle process exit (T007: crash detection + Graceful DB Update)
         child.on('exit', (code, signal) => {
-            console.log(`[Capture] Process exited with code ${code}, signal ${signal}`);
+
+            // Capture the Last Session ID using the closure if activeCapture is still valid or already null
+            // We use the one we detected via stdout
+
+            // If activeCapture was already null (cleaned by force), we might lose context if we rely strictly on global.
+            // But usually we only clear activeCapture at the very specific moment.
+
+            // Wait a moment for file flushing
+            if (activeCapture && activeCapture.lastSessionId) {
+                const sessionId = activeCapture.lastSessionId;
+
+                setTimeout(() => {
+                    try {
+                        scanSession(sessionId);
+                    } catch (e) {
+                        console.error(`❌ [Orchestrator] Falha ao atualizar DB:`, e);
+                    }
+                }, 1000);
+            }
+
+            // Always clear activeCapture on exit to reset state
             if (activeCapture && activeCapture.pid === child.pid) {
                 activeCapture = null;
             }
@@ -110,35 +139,41 @@ async function stopCapture() {
         throw err;
     }
 
+    // Capture local reference
+    const { process: child } = activeCapture;
+
     return new Promise((resolve) => {
-        const { process: child, lastSessionId } = activeCapture;
         const stoppedAt = new Date().toISOString();
 
-        child.on('exit', () => {
-            const sessionId = activeCapture?.lastSessionId || lastSessionId || 'unknown';
-            activeCapture = null;
-            resolve({
-                status: 'IDLE',
-                sessionId,
-                stoppedAt
-            });
-        });
-
-        // Send SIGTERM for graceful shutdown
+        // 1. Send SIGTERM to trigger graceful shutdown in index.js
+        // index.js will catch this, save session, print ID, and then exit.
         child.kill('SIGTERM');
 
-        // Fallback: force kill after 5 seconds
+        // 2. Wait for the process to actually exit
+        // The DB update logic is now entirely handled by the 'exit' listener in startCapture
+        child.once('exit', () => {
+            // We can't easily return the sessionId here because it's asynchronous from the child's stdout.
+            // But the API client typically refreshes the list anyway.
+            // If we really needed it, we'd have to wait for the stdout match event too.
+            // For now, we return IDLE status.
+
+            resolve({
+                status: 'IDLE',
+                sessionId: activeCapture?.lastSessionId || null, // Best effort
+                stoppedAt
+            });
+            // activeCapture is cleared in the 'exit' listener
+        });
+
+        // 3. Fallback force kill
         setTimeout(() => {
-            if (activeCapture) {
+            if (activeCapture && activeCapture.pid === child.pid) {
+                console.warn('⚠️ Force-killing stalled capture process...');
                 child.kill('SIGKILL');
-                activeCapture = null;
-                resolve({
-                    status: 'IDLE',
-                    sessionId: lastSessionId || 'unknown',
-                    stoppedAt
-                });
+                // The exit listener will still run (with signal SIGKILL)
+                // But probably won't have a session ID if it froze.
             }
-        }, 5000);
+        }, 6000); // 6s (give index.js 5s to timeout + 1s buffer)
     });
 }
 
@@ -146,7 +181,11 @@ const app = express();
 const PORT = 3001;
 
 // Middleware
-app.use(cors({ origin: 'http://localhost:5173' }));
+app.use(cors({
+    origin: 'http://localhost:5173',
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type']
+}));
 app.use(compression());
 app.use(express.json());
 
@@ -182,55 +221,48 @@ function parseSessionTimestamp(sessionId) {
 // GET /api/sessions - List all sessions
 app.get('/api/sessions', async (req, res) => {
     try {
-        const capturesDir = path.join(__dirname, 'captures');
-        const folders = await fs.readdir(capturesDir);
+        const sessions = db.prepare(`
+          SELECT
+            id,
+            created_at,
+            status,
+            duration_ms,
+            total_files,
+            total_size_bytes
+          FROM sessions
+          ORDER BY created_at DESC
+        `).all();
 
-        const sessionPromises = folders
-            .filter(name => name.startsWith('session_'))
-            .map(async (sessionId) => {
-                try {
-                    const timelineFile = path.join(capturesDir, sessionId, 'timeline.json');
-                    let eventCount = 0;
+        // Adiciona timestamp para manter contrato com frontend se necessário
+        // Mas a query já retorna created_at que é o timestamp ISO
+        const mappedSessions = sessions.map(s => ({
+            sessionId: s.id,
+            timestamp: s.created_at,
+            eventCount: s.total_files, // Aproximação ou usar outra lógica se events != files
+            status: s.status,
+            duration: s.duration_ms,
+            sizeBytes: s.total_size_bytes
+        }));
 
-                    try {
-                        const content = await fs.readFile(timelineFile, 'utf-8');
-                        const events = JSON.parse(content);
-                        eventCount = Array.isArray(events) ? events.length : 0;
-                    } catch (err) {
-                        console.warn(`Failed to read timeline for ${sessionId}:`, err.message);
-                    }
-
-                    // Parse timestamp from sessionId
-                    const timestamp = parseSessionTimestamp(sessionId);
-
-                    return {
-                        sessionId,
-                        timestamp,
-                        eventCount,
-                        filePath: `captures/${sessionId}/timeline.json`
-                    };
-                } catch (err) {
-                    // Log warning and skip this session if parsing fails
-                    console.warn(`Failed to process session ${sessionId}:`, err.message);
-                    return null;
-                }
-            });
-
-        const sessionsWithNulls = await Promise.all(sessionPromises);
-
-        // Filter out failed sessions (null values)
-        const sessions = sessionsWithNulls.filter(session => session !== null);
-
-        // Sort by timestamp descending (newest first)
-        sessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-        res.json({ sessions, total: sessions.length });
+        res.json({ sessions: mappedSessions, total: mappedSessions.length });
     } catch (error) {
         console.error('Error reading sessions:', error);
         res.status(500).json({
-            error: 'Failed to read sessions directory',
+            error: 'Failed to read sessions from database',
             message: error.message
         });
+    }
+});
+
+// GET /api/sessions/:id/files (NOVA)
+app.get('/api/sessions/:id/files', (req, res) => {
+    try {
+        const files = db.prepare(`
+      SELECT * FROM session_files WHERE session_id = ? ORDER BY file_name ASC
+    `).all(req.params.id);
+        res.json(files);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -372,6 +404,49 @@ app.get('/api/sessions/:sessionId/download', async (req, res) => {
                 message: error.message
             });
         }
+    }
+});
+
+// DELETE /api/sessions/reset - Hard Reset (Wipe all data)
+app.delete('/api/sessions/reset', async (req, res) => {
+    try {
+        // 1. Database Wipe (Transactional)
+        const wipeDb = db.transaction(() => {
+            db.prepare('DELETE FROM session_files').run();
+            db.prepare('DELETE FROM sessions').run();
+        });
+        wipeDb();
+
+        // 2. File System Wipe
+        const capturesDir = path.join(__dirname, 'captures');
+
+        // Check if directory exists
+        try {
+            await fs.access(capturesDir);
+
+            const files = await fs.readdir(capturesDir);
+            for (const file of files) {
+                // Keep .gitkeep if it exists, remove everything else
+                if (file === '.gitkeep') continue;
+
+                const fullPath = path.join(capturesDir, file);
+                await fs.rm(fullPath, { recursive: true, force: true });
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                throw error; // Rethrow unexpected errors
+            }
+            // If dir doesn't exist, that's fine (already empty/gone)
+        }
+
+        res.status(200).json({ message: 'System reset successful' });
+
+    } catch (error) {
+        console.error('❌ Hard Reset Failed:', error);
+        res.status(500).json({
+            error: 'Failed to reset system',
+            message: error.message
+        });
     }
 });
 

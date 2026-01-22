@@ -38,9 +38,13 @@ frontend:
 
 # Run both server and frontend in parallel
 dev:
+	@echo "🧹 Running cleanup..."
+	@node scripts/cleanup.js
 	@echo "🚀 Starting API server + Frontend..."
 	@echo "📊 API Server: http://localhost:3001"
 	@echo "🎨 Frontend: http://localhost:5173"
+	@echo "📦 Checking database..."
+	@node db.js
 	@echo ""
 	@make -j2 server frontend
 
